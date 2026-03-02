@@ -1,0 +1,39 @@
+{
+  "name": {
+    "en": "TBZ48"
+  },
+  "class": "thermostat",
+  "images": {
+    "small": "assets/images/small.png",
+    "large": "assets/images/large.png"
+  },
+  "capabilities": [
+    "measure_temperature",
+    "target_temperature",
+    "thermostat_mode",
+    "fan_mode",
+    "measure_battery",
+    "alarm_battery"
+  ],
+  "energy": {
+    "batteries": [
+      "AA"
+    ]
+  },
+  "zwave": {
+    "manufacturerId": 16,
+    "productTypeId": 21570,
+    "productId": 21554,
+
+    "learnmode": {
+      "instruction": {
+        "en": "Put the thermostat into inclusion mode, then press Next.",
+        "zh": "请将温控器进入添加/包含模式，然后点击下一步。"
+      }
+    },
+
+    "associationGroups": [
+      1
+    ]
+  }
+}

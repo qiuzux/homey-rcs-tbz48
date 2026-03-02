@@ -1,0 +1,199 @@
+备注：重启Homey，Reset温控器的前提下
+
+'use strict';
+
+const { ZwaveDevice } = require('homey-zwavedriver');
+
+class TBZ48Device extends ZwaveDevice {
+
+  async onNodeInit() {
+    this.log('TBZ48 - INIT (capability mapping, no raw payload)');
+
+    // ---- FUSE: safe set capability value (prevents 404 / invalid capability) ----
+    this._safeSet = async (cap, value) => {
+      try {
+        if (!this.hasCapability(cap)) {
+          this.log(`[FUSE] skip set ${cap}=${value} (cap missing on device instance)`);
+          return;
+        }
+        await this.setCapabilityValue(cap, value);
+      } catch (e) {
+        this.error(`[FUSE] setCapabilityValue failed cap=${cap} value=${value}`, e);
+      }
+    };
+
+    // Log capabilities on this device instance
+    try {
+      this.log('capabilities on this device instance =', this.getCapabilities());
+    } catch (e) {
+      this.log('getCapabilities failed:', e);
+    }
+
+    // --------------------------------------------------------------------------
+    // 1) thermostat_mode  <-> THERMOSTAT_MODE
+    // --------------------------------------------------------------------------
+    // TBZ48 mode enum (common):
+    // 0 Off, 1 Heat, 2 Cool, 3 Auto, 4 Aux/Emergency Heat
+    this.registerCapability('thermostat_mode', 'THERMOSTAT_MODE', {
+      get: 'THERMOSTAT_MODE_GET',
+      getOpts: { getOnStart: true, getOnOnline: true },
+
+      // Homey writes: off/heat/cool/auto
+      set: 'THERMOSTAT_MODE_SET',
+      setParser: (value) => {
+        const modeByte = this._homeyModeToTbz48(value);
+        // Most Homey zwave defs expect { Level: { Mode: <enum> } } OR { Level: <enum> } depending on CC definition.
+        // Use the safer object form:
+        return { Level: { Mode: modeByte } };
+      },
+
+      report: 'THERMOSTAT_MODE_REPORT',
+      reportParser: (report) => {
+        // Try to parse both string and numeric forms.
+        const raw =
+          report?.Level?.Mode ??
+          report?.Mode ??
+          report?.level?.mode ??
+          null;
+
+        if (raw === null || raw === undefined) return null;
+
+        if (typeof raw === 'string') {
+          const s = raw.toLowerCase();
+          if (s.includes('off')) return 'off';
+          if (s.includes('heat')) return 'heat';
+          if (s.includes('cool')) return 'cool';
+          if (s.includes('auto')) return 'auto';
+          return null;
+        }
+
+        return this._tbz48ModeToHomey(Number(raw));
+      },
+    });
+
+    // --------------------------------------------------------------------------
+    // 2) fan_mode  <-> THERMOSTAT_FAN_MODE
+    // --------------------------------------------------------------------------
+    // 0 Auto, 1 On (typical)
+    this.registerCapability('fan_mode', 'THERMOSTAT_FAN_MODE', {
+      get: 'THERMOSTAT_FAN_MODE_GET',
+      getOpts: { getOnStart: true, getOnOnline: true },
+
+      set: 'THERMOSTAT_FAN_MODE_SET',
+      setParser: (value) => {
+        const fanByte = (value === 'auto') ? 0 : 1;
+        // Many defs expect { Level: { 'Fan Mode': <enum> } }
+        return { Level: { 'Fan Mode': fanByte } };
+      },
+
+      report: 'THERMOSTAT_FAN_MODE_REPORT',
+      reportParser: (report) => {
+        const raw =
+          report?.Level?.['Fan Mode'] ??
+          report?.Level?.FanMode ??
+          report?.['Fan Mode'] ??
+          report?.FanMode ??
+          null;
+
+        if (raw === null || raw === undefined) return null;
+        return (Number(raw) === 0) ? 'auto' : 'on';
+      },
+    });
+
+    // --------------------------------------------------------------------------
+    // 3) target_temperature <-> THERMOSTAT_SETPOINT
+    // --------------------------------------------------------------------------
+    // TBZ48 usually uses "Heating 1" setpoint for heat mode.
+    // We'll always use Heating 1 first. (Once stable we can make it mode-aware.)
+    this.registerCapability('target_temperature', 'THERMOSTAT_SETPOINT', {
+      get: 'THERMOSTAT_SETPOINT_GET',
+      getOpts: { getOnStart: true, getOnOnline: true },
+
+      getParser: () => ({
+        Level: { 'Setpoint Type': 'Heating 1' },
+      }),
+
+      set: 'THERMOSTAT_SETPOINT_SET',
+      setParser: (value) => ({
+        Level: {
+          'Setpoint Type': 'Heating 1',
+          Precision: 1,
+          Scale: 0,      // 0 = Celsius, 1 = Fahrenheit (device may still report in F; Homey handles conversion at UI)
+          Size: 2,
+        },
+        Value: value,
+      }),
+
+      report: 'THERMOSTAT_SETPOINT_REPORT',
+      reportParser: (report) => {
+        // report often includes Level + Value
+        const type =
+          report?.Level?.['Setpoint Type'] ??
+          report?.Level?.SetpointType ??
+          null;
+
+        // only accept Heating 1 to avoid overwriting with other types
+        if (type && String(type).toLowerCase().includes('heating') === false) return null;
+
+        const v = report?.Value ?? report?.value ?? null;
+        if (v === null || v === undefined) return null;
+
+        return Number(v);
+      },
+    });
+
+    // --------------------------------------------------------------------------
+    // 4) measure_battery <-> BATTERY
+    // --------------------------------------------------------------------------
+    // This is the cleanest way to make zw_battery stop showing "x" once REPORT arrives.
+    this.registerCapability('measure_battery', 'BATTERY', {
+      get: 'BATTERY_GET',
+      getOpts: { getOnStart: true, getOnOnline: true },
+
+      report: 'BATTERY_REPORT',
+      reportParser: (report) => {
+        const v = report?.['Battery Level'] ?? report?.BatteryLevel ?? null;
+        if (v === null || v === undefined) return null;
+        // 0xFF means low battery warning in Z-Wave spec
+        if (Number(v) === 255) return 1; // show 1% instead of null
+        return Number(v);
+      },
+    });
+
+    // --------------------------------------------------------------------------
+    // 5) Optional: low battery alarm from BATTERY_REPORT 0xFF
+    // --------------------------------------------------------------------------
+    // If you want alarm_battery to reflect 0xFF, listen and fuse-set.
+    this.registerReportListener('BATTERY', 'BATTERY_REPORT', async (report) => {
+      const v = report?.['Battery Level'] ?? report?.BatteryLevel ?? null;
+      if (v === null || v === undefined) return;
+      const isLow = (Number(v) === 255);
+      await this._safeSet('alarm_battery', isLow);
+    });
+
+    this.log('TBZ48 - INIT done.');
+  }
+
+  _homeyModeToTbz48(mode) {
+    switch (mode) {
+      case 'off': return 0;
+      case 'heat': return 1;
+      case 'cool': return 2;
+      case 'auto': return 3;
+      default: return 3;
+    }
+  }
+
+  _tbz48ModeToHomey(level) {
+    switch (Number(level)) {
+      case 0: return 'off';
+      case 1: return 'heat';
+      case 2: return 'cool';
+      case 3: return 'auto';
+      case 4: return 'heat'; // emergency heat -> heat
+      default: return 'auto';
+    }
+  }
+}
+
+module.exports = TBZ48Device;

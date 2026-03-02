@@ -1,0 +1,10 @@
+{
+  "name": "com.qiuzu.tbz48",
+  "version": "1.0.0",
+  "description": "RCS TBZ48 Thermostat Driver for Homey Pro",
+  "main": "app.js",
+  "license": "MIT",
+  "dependencies": {
+    "homey-zwavedriver": "^2.2.1"
+  }
+}
