@@ -4,8 +4,8 @@
   },
   "class": "thermostat",
   "images": {
-    "small": "assets/images/small.png",
-    "large": "assets/images/large.png"
+    "small": "small.png",
+    "large": "large.png"
   },
   "capabilities": [
     "measure_temperature",

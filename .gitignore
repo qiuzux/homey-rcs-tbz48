@@ -2,3 +2,16 @@ node_modules/
 .homeybuild/
 .homeycompose/
 logs/
+# ---- user local backups ----
+*.bak
+
+# ---- npm lock file (user requested not to upload) ----
+package-lock.json
+
+# ---- Chinese-named files (ignore any path containing CJK characters) ----
+*[\u4e00-\u9fff]*
+
+# (optional but recommended for Node/Homey)
+node_modules/
+.env
+.DS_Store
